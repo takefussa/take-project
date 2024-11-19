@@ -1,6 +1,7 @@
 import { GetServerSideProps } from 'next';
 import supabase from '../lib/supabase';
 
+
 interface Task {
   id: number;
   project_id: number;
