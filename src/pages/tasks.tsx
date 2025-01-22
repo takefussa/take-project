@@ -1,5 +1,5 @@
 import { GetServerSideProps } from 'next';
-import supabase from '../lib/supabase';
+import supabase from '../libs/supabase';
 
 
 interface Task {
