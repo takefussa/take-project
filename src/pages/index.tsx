@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Box,
   VStack,
@@ -13,11 +13,13 @@ import {
 } from '@chakra-ui/react';
 import { ChevronDownIcon, ChevronRightIcon, AddIcon, CloseIcon } from '@chakra-ui/icons';
 import { FaHome, FaProjectDiagram } from 'react-icons/fa';
+import supabase from '../libs/supabase'; // Supabase クライアントをインポート
 
 interface Task {
   id: number;
   name: string;
   status: 'Todo' | 'In Progress' | 'Done';
+  project_id: number;
 }
 
 interface Project {
@@ -35,8 +37,84 @@ export default function Home() {
   const [newTaskName, setNewTaskName] = useState<string>('');
   const toast = useToast();
 
-  // プロジェクト追加
-  const addProject = () => {
+  useEffect(() => {
+    const fetchProjectsAndTasks = async () => {
+      const { data: projectsData, error: projectsError } = await supabase.from('projects').select('*');
+      if (projectsError) {
+        console.error('Error fetching projects:', projectsError);
+        toast({
+          title: 'Error',
+          description: 'プロジェクトの取得に失敗しました。',
+          status: 'error',
+          duration: 3000,
+          isClosable: true,
+        });
+        return;
+      }
+
+      const { data: tasksData, error: tasksError } = await supabase.from('tasks').select('*');
+      if (tasksError) {
+        console.error('Error fetching tasks:', tasksError);
+        toast({
+          title: 'Error',
+          description: 'タスクの取得に失敗しました。',
+          status: 'error',
+          duration: 3000,
+          isClosable: true,
+        });
+        return;
+      }
+
+      const projectsWithTasks = projectsData.map((project: Project) => ({
+        ...project,
+        tasks: tasksData.filter((task: Task) => task.project_id === project.id) || [],
+      }));
+
+      setProjects(projectsWithTasks);
+    };
+
+    fetchProjectsAndTasks();
+  }, []);
+
+  const updateTaskStatus = async (taskId: number, currentStatus: 'Todo' | 'In Progress' | 'Done', projectId: number) => {
+    const nextStatus = currentStatus === 'Todo' ? 'In Progress' : currentStatus === 'In Progress' ? 'Done' : 'Todo';
+
+    const { error } = await supabase.from('tasks').update({ status: nextStatus }).eq('id', taskId);
+    if (error) {
+      console.error('Error updating task status:', error);
+      toast({
+        title: 'Error',
+        description: 'タスクのステータス更新に失敗しました。',
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      });
+      return;
+    }
+
+    setProjects((prevProjects) =>
+      prevProjects.map((project) =>
+        project.id === projectId
+          ? {
+              ...project,
+              tasks: project.tasks.map((task) =>
+                task.id === taskId ? { ...task, status: nextStatus } : task
+              ),
+            }
+          : project
+      )
+    );
+
+    toast({
+      title: 'Updated',
+      description: `タスクのステータスが「${nextStatus}」に更新されました。`,
+      status: 'success',
+      duration: 3000,
+      isClosable: true,
+    });
+  };
+
+  const addProject = async () => {
     if (!newProjectName.trim()) {
       toast({
         title: 'Error',
@@ -47,41 +125,95 @@ export default function Home() {
       });
       return;
     }
-    const newProject: Project = {
-      id: Date.now(),
-      name: newProjectName.trim(),
-      tasks: [],
-    };
-    setProjects([...projects, newProject]);
+
+    const { data, error } = await supabase
+      .from('projects')
+      .insert([{ name: newProjectName.trim() }])
+      .select();
+
+    if (error) {
+      console.error('Error adding project:', error);
+      toast({
+        title: 'Error',
+        description: 'プロジェクトの追加に失敗しました。',
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      });
+      return;
+    }
+
+    setProjects([...projects, ...data.map((project: Project) => ({ ...project, tasks: [] }))]);
     setNewProjectName('');
     toast({
       title: 'Success',
-      description: `プロジェクト「${newProject.name}」が追加されました。`,
+      description: `プロジェクト「${newProjectName}」が追加されました。`,
       status: 'success',
       duration: 3000,
       isClosable: true,
     });
   };
 
-  // プロジェクト削除
-  const deleteProject = (projectId: number) => {
+  const deleteProject = async (projectId: number) => {
+    const { error: tasksError } = await supabase.from('tasks').delete().eq('project_id', projectId);
+    if (tasksError) {
+      console.error('Error deleting tasks:', tasksError);
+      toast({
+        title: 'Error',
+        description: 'タスクの削除に失敗しました。',
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      });
+      return;
+    }
+
+    const { error: projectError } = await supabase.from('projects').delete().eq('id', projectId);
+    if (projectError) {
+      console.error('Error deleting project:', projectError);
+      toast({
+        title: 'Error',
+        description: 'プロジェクトの削除に失敗しました。',
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      });
+      return;
+    }
+
     setProjects((prevProjects) => prevProjects.filter((project) => project.id !== projectId));
     if (selectedProjectId === projectId) setSelectedProjectId(null);
     toast({
       title: 'Deleted',
-      description: 'プロジェクトが削除されました。',
+      description: 'プロジェクトとそのタスクが削除されました。',
       status: 'info',
       duration: 3000,
       isClosable: true,
     });
   };
 
-  // タスク追加
-  const addTask = () => {
-    if (!newTaskName.trim() || selectedProjectId === null) {
+  const addTask = async (taskName: string, projectId: number) => {
+    if (!taskName.trim()) {
       toast({
         title: 'Error',
-        description: 'プロジェクトを選択し、タスク名を入力してください。',
+        description: 'タスク名を入力してください。',
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      });
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from('tasks')
+      .insert([{ name: taskName.trim(), project_id: projectId, status: 'Todo' }])
+      .select();
+
+    if (error) {
+      console.error('Error adding task:', error);
+      toast({
+        title: 'Error',
+        description: 'タスクの追加に失敗しました。',
         status: 'error',
         duration: 3000,
         isClosable: true,
@@ -91,20 +223,14 @@ export default function Home() {
 
     setProjects((prevProjects) =>
       prevProjects.map((project) =>
-        project.id === selectedProjectId
-          ? {
-              ...project,
-              tasks: [
-                ...project.tasks,
-                { id: Date.now(), name: newTaskName.trim(), status: 'Todo' },
-              ],
-            }
+        project.id === projectId
+          ? { ...project, tasks: [...(project.tasks || []), ...data] }
           : project
       )
     );
     setNewTaskName('');
     toast({
-      title: 'Task Added',
+      title: 'Success',
       description: 'タスクが追加されました。',
       status: 'success',
       duration: 3000,
@@ -112,8 +238,20 @@ export default function Home() {
     });
   };
 
-  // タスク削除
-  const deleteTask = (projectId: number, taskId: number) => {
+  const deleteTask = async (taskId: number, projectId: number) => {
+    const { error } = await supabase.from('tasks').delete().eq('id', taskId);
+    if (error) {
+      console.error('Error deleting task:', error);
+      toast({
+        title: 'Error',
+        description: 'タスクの削除に失敗しました。',
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      });
+      return;
+    }
+
     setProjects((prevProjects) =>
       prevProjects.map((project) =>
         project.id === projectId
@@ -124,6 +262,7 @@ export default function Home() {
           : project
       )
     );
+
     toast({
       title: 'Deleted',
       description: 'タスクが削除されました。',
@@ -133,30 +272,6 @@ export default function Home() {
     });
   };
 
-  // タスク状態変更
-  const moveTask = (projectId: number, taskId: number, newStatus: Task['status']) => {
-    setProjects((prevProjects) =>
-      prevProjects.map((project) =>
-        project.id === projectId
-          ? {
-              ...project,
-              tasks: project.tasks.map((task) =>
-                task.id === taskId ? { ...task, status: newStatus } : task
-              ),
-            }
-          : project
-      )
-    );
-  };
-
-  // プロジェクトのタスク数をカウント
-  const countTasksByStatus = (tasks: Task[], status: Task['status']) => {
-    return tasks.filter((task) => task.status === status).length;
-  };
-
-  const selectedProject = projects.find((project) => project.id === selectedProjectId);
-
-  // ホームページ描画
   const renderHomePage = () => (
     <Box>
       <Text fontSize="2xl" fontWeight="bold" mb={4}>
@@ -180,9 +295,9 @@ export default function Home() {
               <Box>
                 <Text fontWeight="bold">{project.name}</Text>
                 <Text>
-                  Todo: {countTasksByStatus(project.tasks, 'Todo')} | In Progress:{' '}
-                  {countTasksByStatus(project.tasks, 'In Progress')} | Done:{' '}
-                  {countTasksByStatus(project.tasks, 'Done')}
+                  Todo: {project.tasks?.filter((task) => task.status === 'Todo').length || 0} | In Progress:{' '}
+                  {project.tasks?.filter((task) => task.status === 'In Progress').length || 0} | Done:{' '}
+                  {project.tasks?.filter((task) => task.status === 'Done').length || 0}
                 </Text>
               </Box>
               <IconButton
@@ -201,87 +316,77 @@ export default function Home() {
     </Box>
   );
 
-  // プロジェクトページ描画
   const renderProjectPage = () => (
     <Box>
-      {selectedProject && (
-        <>
-          <Text fontSize="2xl" fontWeight="bold" mb={4}>
-            {selectedProject.name}
-          </Text>
-          {/* タスク追加 */}
-          <HStack spacing={2} mb={4}>
-            <Input
-              placeholder="タスク名"
-              value={newTaskName}
-              onChange={(e) => setNewTaskName(e.target.value)}
-              bg="white"
-            />
-            <Button colorScheme="teal" leftIcon={<AddIcon />} onClick={addTask}>
-              Add Task
-            </Button>
-          </HStack>
-          {/* タスク表示 */}
-          <HStack spacing={8} align="start">
-            {['Todo', 'In Progress', 'Done'].map((status) => (
-              <Box key={status} w="33%">
-                <Text fontSize="lg" fontWeight="bold" mb={4} textAlign="center">
-                  {status}
-                </Text>
-                <List spacing={2}>
-                  {selectedProject.tasks
-                    .filter((task) => task.status === status)
-                    .map((task) => (
-                      <ListItem
-                        key={task.id}
-                        p={4}
-                        bg="gray.100"
-                        borderRadius="md"
-                        display="flex"
-                        justifyContent="space-between"
-                        alignItems="center"
-                        cursor="pointer"
-                        boxShadow="sm"
-                        onClick={() =>
-                          moveTask(
-                            selectedProject.id,
-                            task.id,
-                            status === 'Todo'
-                              ? 'In Progress'
-                              : status === 'In Progress'
-                              ? 'Done'
-                              : 'Todo'
-                          )
-                        }
-                      >
-                        <Text>{task.name}</Text>
-                        <IconButton
-                          aria-label="Delete Task"
-                          icon={<CloseIcon />}
-                          size="xs"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            deleteTask(selectedProject.id, task.id);
-                          }}
-                        />
-                      </ListItem>
-                    ))}
-                </List>
-              </Box>
-            ))}
-          </HStack>
-        </>
-      )}
+      {projects
+        .filter((project) => project.id === selectedProjectId)
+        .map((project) => (
+          <Box key={project.id}>
+            <Text fontSize="2xl" fontWeight="bold" mb={4}>
+              {project.name}
+            </Text>
+            <HStack spacing={2} mb={4}>
+              <Input
+                placeholder="タスク名"
+                value={newTaskName}
+                onChange={(e) => setNewTaskName(e.target.value)}
+                bg="white"
+              />
+              <Button
+                colorScheme="teal"
+                leftIcon={<AddIcon />}
+                onClick={() => addTask(newTaskName, project.id)}
+              >
+                Add Task
+              </Button>
+            </HStack>
+            <HStack spacing={8} align="start">
+              {['Todo', 'In Progress', 'Done'].map((status) => (
+                <Box key={status} w="33%">
+                  <Text fontSize="lg" fontWeight="bold" mb={4} textAlign="center">
+                    {status}
+                  </Text>
+                  <List spacing={2}>
+                    {project.tasks
+                      ?.filter((task) => task.status === status)
+                      .map((task) => (
+                        <ListItem
+                          key={task.id}
+                          p={4}
+                          bg="gray.100"
+                          borderRadius="md"
+                          display="flex"
+                          justifyContent="space-between"
+                          alignItems="center"
+                          cursor="pointer"
+                          boxShadow="sm"
+                          onClick={() => updateTaskStatus(task.id, task.status, project.id)}
+                        >
+                          <Text>{task.name}</Text>
+                          <IconButton
+                            aria-label="Delete Task"
+                            icon={<CloseIcon />}
+                            size="xs"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              deleteTask(task.id, project.id);
+                            }}
+                          />
+                        </ListItem>
+                      ))}
+                  </List>
+                </Box>
+              ))}
+            </HStack>
+          </Box>
+        ))}
     </Box>
   );
 
   return (
     <HStack h="100vh" spacing={0} align="start">
-      {/* 左メニュー */}
       <VStack bg="gray.200" w="240px" h="100%" spacing={4} align="stretch" p={4}>
-        <Text fontSize="xl" fontWeight="bold">
-          Task管理
-        </Text>
+        <Text fontSize="xl" fontWeight="bold">Task管理</Text>
         <List spacing={2}>
           <ListItem
             bg="white"
@@ -317,39 +422,35 @@ export default function Home() {
             projects.map((project) => (
               <ListItem
                 key={project.id}
+                bg={selectedProjectId === project.id ? 'pink.100' : 'white'}
+                _hover={{ bg: 'gray.100' }}
                 p={2}
-                pl={8}
-                bg="white"
                 borderRadius="md"
-                _hover={{ bg: 'pink.300' }}
+                display="flex"
+                alignItems="center"
                 cursor="pointer"
                 onClick={() => {
                   setSelectedPage('Project');
                   setSelectedProjectId(project.id);
                 }}
               >
-                {project.name}
+                <Text>{project.name}</Text>
               </ListItem>
             ))}
         </List>
-        {/* プロジェクト追加 */}
-        {isProjectListVisible && (
-          <Box mt={4} bg="white" p={2} borderRadius="md">
-            <Input
-              placeholder="プロジェクト名"
-              value={newProjectName}
-              onChange={(e) => setNewProjectName(e.target.value)}
-              mb={2}
-              bg="white"
-            />
-            <Button colorScheme="teal" leftIcon={<AddIcon />} onClick={addProject}>
-              Add Project
-            </Button>
-          </Box>
-        )}
+        <Box mt={4} bg="white" p={2} borderRadius="md">
+          <Input
+            placeholder="プロジェクト名"
+            value={newProjectName}
+            onChange={(e) => setNewProjectName(e.target.value)}
+            mb={2}
+            bg="white"
+          />
+          <Button colorScheme="teal" leftIcon={<AddIcon />} onClick={addProject}>
+            Add Project
+          </Button>
+        </Box>
       </VStack>
-
-      {/* メインコンテンツ */}
       <Box flex={1} p={4} bg="white">
         {selectedPage === 'Home' && renderHomePage()}
         {selectedPage === 'Project' && renderProjectPage()}
@@ -357,3 +458,5 @@ export default function Home() {
     </HStack>
   );
 }
+
+
